@@ -1,0 +1,55 @@
+name: Build & Release
+
+on:
+  push:
+    branches: [master, 'fix/**']
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # The libby Gradle plugin is no longer hosted on repo.kyngs.xyz, so build it from source.
+      - name: Build libby-gradle-plugin
+        run: |
+          git clone --depth 1 https://github.com/kyngs/libby-gradle-plugin.git "$RUNNER_TEMP/libby-gradle-plugin"
+          cd "$RUNNER_TEMP/libby-gradle-plugin"
+          chmod +x gradlew
+          ./gradlew :plugin:publishToMavenLocal -x javadoc -x licenseCheck --no-daemon
+
+      - name: Build LibreLogin
+        run: |
+          chmod +x gradlew
+          ./gradlew shadowJar --no-daemon
+
+      - name: Read version
+        id: ver
+        run: echo "version=$(grep -m1 "^version" build.gradle | sed "s/.*'\(.*\)'.*/\1/")" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LibreLogin
+          path: Plugin/build/libs/LibreLogin.jar
+
+      - name: Publish release
+        if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', steps.ver.outputs.version) }}"
+          gh release view "$TAG" >/dev/null 2>&1 \
+            && gh release upload "$TAG" Plugin/build/libs/LibreLogin.jar --clobber \
+            || gh release create "$TAG" Plugin/build/libs/LibreLogin.jar --title "$TAG" --generate-notes --target "${{ github.sha }}"
